@@ -1,9 +1,13 @@
-from fastapi import FastAPI
+from fastapi import FastAPI, Request
+from fastapi.responses import StreamingResponse
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
 from enum import Enum
 import random
 from datetime import datetime
+
+import asyncio
+import json
 
 # Создаем экземпляр приложения FastAPI
 app = FastAPI(title="Heavy Render Benchmark API")
@@ -87,6 +91,36 @@ async def start_benchmark(request: BenchmarkRequest):
         "payload": payload  # Основная нагрузка для фронтенда
     }
 
+@app.get("/api/stream")
+async def stream_data():
+    """Поток Server-Sent Events с тестовыми данными."""
+    async def event_generator():
+        counter = 0
+        try:
+            while True:
+                await asyncio.sleep(0.1)  # Пауза 100 мс
+                counter += 1
+                # Формируем простое тестовое событие
+                data = {
+                    "id": counter,
+                    "timestamp": datetime.now().isoformat(),
+                    "value": random.randint(1, 100)
+                }
+                # Формат SSE: "data: <json>\n\n"
+                yield f"data: {json.dumps(data)}\n\n"
+        except asyncio.CancelledError:
+            print("Клиент отключился")
+
+    return StreamingResponse(
+        event_generator(),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache",
+            "Connection": "keep-alive"
+        }
+    )
+    
+    
 # Простой эндпоинт для проверки работоспособности сервера
 @app.get("/")
 async def root():
