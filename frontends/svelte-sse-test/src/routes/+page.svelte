@@ -1,12 +1,12 @@
 <script>
     // Импортируем хук жизненного цикла
     import { onMount, onDestroy } from 'svelte';
-    // Переменная для хранения подключения
+    // Импортируем хранилища и центральную функцию обработки
+    import { processNewEvent, metricsStore, rawEventStore } from '$lib/stores.js';
+    import MetricsPanel from '$lib/components/MetricsPanel.svelte';
+    import EventHistory from '$lib/components/EventHistory.svelte';
+
     let eventSource = null;
-    // Реактивная переменная для счётчика событий
-    let eventCount = 0;
-    // Переменная для хранения последнего полученного сообщения
-    let lastMessage = 'Ожидание данных...';
 
     // Функция запускается при монтировании компонента (открытии страницы)
     onMount(() => {
@@ -18,29 +18,18 @@
         // Обработчик успешного открытия соединения
         eventSource.onopen = (event) => {
             console.log('SSE соединение установлено.');
-            lastMessage = 'Соединение активно. Данные поступают...';
+            rawEventStore.set('SSE: Соединение активно. Ожидание данных...');
         };
 
-        // Обработчик входящих сообщений (самое важное)
+        // Обработчик входящих сообщений
         eventSource.onmessage = (event) => {
-            // event.data содержит строку вида 'data: {"id":1,...}'
-            // Увеличиваем счётчик
-            eventCount += 1;
-            // Сохраняем сырые данные для отображения
-            lastMessage = event.data;
-            // Выводим структурированную информацию в консоль для отладки
-            try {
-                const parsedData = JSON.parse(event.data);
-                console.log('Получено событие:', parsedData);
-            } catch (e) {
-                console.log('Получена строка:', event.data);
-            }
+            processNewEvent(event.data);
         };
 
         // Обработчик ошибок соединения
         eventSource.onerror = (err) => {
             console.error('Ошибка SSE соединения:', err);
-            lastMessage = 'Ошибка соединения. Попытка переподключения...';
+            rawEventStore.set('SSE: Ошибка соединения. Попытка переподключения...');
             // Закрываем битое соединение
             if (eventSource) eventSource.close();
             // Через 3 секунды пытаемся переподключиться
@@ -66,7 +55,7 @@
     function stopStream() {
         if (eventSource) {
             eventSource.close();
-            lastMessage = 'Поток вручную остановлен.';
+            rawEventStore.set('Поток вручную остановлен.');
             console.log('Поток остановлен пользователем.');
         }
     }
@@ -78,9 +67,15 @@
 
     <div class="status">
         <h2>Статус:</h2>
-        <p>Получено событий: <strong>{eventCount}</strong></p>
-        <p>Последнее сообщение: <code>{lastMessage}</code></p>
+        <p>Получено событий: <strong>{$metricsStore.totalReceived}</strong></p>
+        <p>Последнее сообщение: <code>{$rawEventStore || 'Ожидание данных...'}</code></p>
     </div>
+
+    <!-- ПАНЕЛЬ МЕТРИК -->
+    <EventHistory />
+
+    <!-- ТАБЛИЦА ИСТОРИИ -->
+    <MetricsPanel />
 
     <div class="controls">
         <button on:click={stopStream}>Остановить поток</button>
