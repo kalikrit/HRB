@@ -5,6 +5,8 @@
     import { processNewEvent, metricsStore, rawEventStore } from '$lib/stores.js';
     import MetricsPanel from '$lib/components/MetricsPanel.svelte';
     import EventHistory from '$lib/components/EventHistory.svelte';
+    // Импортируем компонент графика
+    import LiveChart from '$lib/components/LiveChart.svelte';
 
     let eventSource = null;
 
@@ -72,10 +74,13 @@
     </div>
 
     <!-- ПАНЕЛЬ МЕТРИК -->
-    <EventHistory />
+    <MetricsPanel />
+
+    <!-- График в реальном времени -->
+    <LiveChart />
 
     <!-- ТАБЛИЦА ИСТОРИИ -->
-    <MetricsPanel />
+    <EventHistory />
 
     <div class="controls">
         <button on:click={stopStream}>Остановить поток</button>
