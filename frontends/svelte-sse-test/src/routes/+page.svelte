@@ -5,15 +5,15 @@
     import { processNewEvent, metricsStore, rawEventStore } from '$lib/stores.js';
     import MetricsPanel from '$lib/components/MetricsPanel.svelte';
     import EventHistory from '$lib/components/EventHistory.svelte';
-    // Импортируем компонент графика
     import LiveChart from '$lib/components/LiveChart.svelte';
+    import { benchmarkStore, startFPSCounter, stopFPSCounter, startProcessingMeasure, endProcessingMeasure } from '$lib/benchmark.js';
 
     let eventSource = null;
 
     // Функция запускается при монтировании компонента (открытии страницы)
     onMount(() => {
         console.log('Подключаюсь к SSE-потоку...');
-
+        startFPSCounter();
         // Создаём новое подключение EventSource к нашему эндпоинту
         eventSource = new EventSource('http://localhost:8000/api/stream');
 
@@ -25,7 +25,12 @@
 
         // Обработчик входящих сообщений
         eventSource.onmessage = (event) => {
+            // НАЧИНАЕМ ЗАМЕР ВРЕМЕНИ ОБРАБОТКИ ПАКЕТА
+            startProcessingMeasure();
+            // ВСЯ ЛОГИКА ОБРАБОТКИ ПЕРЕЕХАЛА В STORE
             processNewEvent(event.data);
+            // ЗАВЕРШАЕМ ЗАМЕР (вызовется после обработки в store)
+            endProcessingMeasure();
         };
 
         // Обработчик ошибок соединения
@@ -47,6 +52,7 @@
     // Функция запускается при размонтировании компонента (закрытии вкладки)
     // Важно для очистки ресурсов.
     onDestroy(() => {
+        stopFPSCounter();
         if (eventSource) {
             console.log('Закрываю SSE соединение.');
             eventSource.close();
@@ -70,6 +76,8 @@
     <div class="status">
         <h2>Статус:</h2>
         <p>Получено событий: <strong>{$metricsStore.totalReceived}</strong></p>
+        <p>FPS (интерфейс): <strong>{$benchmarkStore.fps}</strong></p>
+        <p>Обработка пакета: <strong>{$benchmarkStore.processingTime} мс</strong></p>
         <p>Последнее сообщение: <code>{$rawEventStore || 'Ожидание данных...'}</code></p>
     </div>
 

@@ -19,62 +19,107 @@ export const metricsStore = writable({
 
 /**
  * ЦЕНТРАЛЬНАЯ ФУНКЦИЯ ДЛЯ ОБРАБОТКИ НОВОГО СОБЫТИЯ ИЗ SSE.
+ * Теперь поддерживает ПАКЕТНЫЕ обновления (batch: true).
  * @param {string} rawData - Сырые данные события (event.data)
  */
 export function processNewEvent(rawData) {
-    // 1. Сохраняем сырые данные
-    rawEventStore.set(rawData);
+    rawEventStore.set(rawData); // Для отладки всё ещё сохраняем сырые данные
 
     let parsedEvent = null;
-    let serverTimestamp = null;
-    const clientTimestamp = Date.now(); // Время получения на клиенте
+    const clientTimestamp = Date.now();
 
     try {
-        // 2. Парсим JSON, отрезая префикс "data: " если он есть
         const jsonString = rawData.startsWith('data: ') ? rawData.slice(6) : rawData;
         parsedEvent = JSON.parse(jsonString);
 
-        // 3. Сохраняем распарсенное событие
-        eventStore.set(parsedEvent);
+        // ===== ВАЖНОЕ ИЗМЕНЕНИЕ: ОБРАБОТКА ПАКЕТА =====
+        if (parsedEvent.batch && Array.isArray(parsedEvent.updates)) {
+            // ОБРАБОТКА ПАКЕТА ИЗ МНОГИХ ОБНОВЛЕНИЙ
+            let totalLatency = 0;
+            let latencyCount = 0;
 
-        // 4. Вычисляем задержку (latency), если есть метка времени с сервера
-        if (parsedEvent.timestamp) {
-            // Приводим ISO-строку с сервера к миллисекундам
-            serverTimestamp = new Date(parsedEvent.timestamp).getTime();
-        }
+            // 1. Обновляем историю (добавляем все события из пакета)
+            historyStore.update(history => {
+                const newEntries = parsedEvent.updates.map(update => {
+                    const serverTimestamp = update.timestamp ? new Date(update.timestamp).getTime() : null;
+                    const latency = serverTimestamp ? (clientTimestamp - serverTimestamp) : null;
 
-        // 5. Обновляем историю событий
-        historyStore.update(history => {
-            const newEntry = {
-                ...parsedEvent, // Все поля с сервера
-                _clientTime: new Date(clientTimestamp).toISOString(), // Наша метка
-                _latency: serverTimestamp ? (clientTimestamp - serverTimestamp) : null // Задержка
-            };
-            // Добавляем новое событие в начало массива и обрезаем до лимита
-            return [newEntry, ...history.slice(0, HISTORY_LIMIT - 1)];
-        });
+                    if (latency !== null) {
+                        totalLatency += latency;
+                        latencyCount++;
+                    }
 
-        // 6. Обновляем метрики производительности
-        metricsStore.update(currentMetrics => {
-            const newTotal = currentMetrics.totalReceived + 1;
-            let newAvgLatency = currentMetrics.averageLatency;
-            let lastLatency = null;
+                    return {
+                        ...update,
+                        _clientTime: new Date(clientTimestamp).toISOString(),
+                        _latency: latency
+                    };
+                });
 
-            // Если смогли вычислить задержку для этого события
-            if (serverTimestamp) {
-                lastLatency = clientTimestamp - serverTimestamp;
-                // Пересчитываем среднюю задержку: (старая_средняя * старое_кол-во + новая_задержка) / новое_кол-во
-                newAvgLatency = currentMetrics.totalReceived === 0
-                    ? lastLatency
-                    : ((currentMetrics.averageLatency || 0) * currentMetrics.totalReceived + lastLatency) / newTotal;
+                // Добавляем новые записи в начало и обрезаем до лимита
+                return [...newEntries, ...history.slice(0, HISTORY_LIMIT - newEntries.length)];
+            });
+
+            // 2. Обновляем метрики для пакета
+            metricsStore.update(currentMetrics => {
+                const newTotal = currentMetrics.totalReceived + parsedEvent.updates.length;
+                let newAvgLatency = currentMetrics.averageLatency;
+                let lastLatency = latencyCount > 0 ? Math.round(totalLatency / latencyCount) : null;
+
+                if (lastLatency !== null) {
+                    newAvgLatency = currentMetrics.totalReceived === 0
+                        ? lastLatency
+                        : ((currentMetrics.averageLatency || 0) * currentMetrics.totalReceived + totalLatency) / newTotal;
+                }
+
+                return {
+                    totalReceived: newTotal,
+                    lastLatency: lastLatency,
+                    averageLatency: newAvgLatency ? Math.round(newAvgLatency) : null
+                };
+            });
+
+            // 3. Последнее событие из пакета сохраняем для eventStore (опционально)
+            if (parsedEvent.updates.length > 0) {
+                eventStore.set(parsedEvent.updates[0]);
             }
 
-            return {
-                totalReceived: newTotal,
-                lastLatency: lastLatency,
-                averageLatency: newAvgLatency ? Math.round(newAvgLatency) : null
-            };
-        });
+        } else {
+            // ===== СТАРАЯ ЛОГИКА ДЛЯ ОДИНОЧНЫХ СОБЫТИЙ (на всякий случай) =====
+            // ... (оставьте старый код из функции как есть, начиная с eventStore.set(parsedEvent);)
+            // Этот блок теперь вряд ли будет выполняться, но пусть остаётся для совместимости
+            const serverTimestamp = parsedEvent.timestamp ? new Date(parsedEvent.timestamp).getTime() : null;
+
+            eventStore.set(parsedEvent);
+
+            historyStore.update(history => {
+                const newEntry = {
+                    ...parsedEvent,
+                    _clientTime: new Date(clientTimestamp).toISOString(),
+                    _latency: serverTimestamp ? (clientTimestamp - serverTimestamp) : null
+                };
+                return [newEntry, ...history.slice(0, HISTORY_LIMIT - 1)];
+            });
+
+            metricsStore.update(currentMetrics => {
+                const newTotal = currentMetrics.totalReceived + 1;
+                let newAvgLatency = currentMetrics.averageLatency;
+                let lastLatency = null;
+
+                if (serverTimestamp) {
+                    lastLatency = clientTimestamp - serverTimestamp;
+                    newAvgLatency = currentMetrics.totalReceived === 0
+                        ? lastLatency
+                        : ((currentMetrics.averageLatency || 0) * currentMetrics.totalReceived + lastLatency) / newTotal;
+                }
+
+                return {
+                    totalReceived: newTotal,
+                    lastLatency: lastLatency,
+                    averageLatency: newAvgLatency ? Math.round(newAvgLatency) : null
+                };
+            });
+        }
 
     } catch (error) {
         console.error('[store] Ошибка при обработке события:', error, 'Данные:', rawData);

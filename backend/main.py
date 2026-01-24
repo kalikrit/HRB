@@ -93,30 +93,54 @@ async def start_benchmark(request: BenchmarkRequest):
 
 @app.get("/api/stream")
 async def stream_data():
-    """Поток Server-Sent Events с тестовыми данными."""
+    """Поток Server-Sent Events с ПАКЕТНЫМИ обновлениями (нагрузочный тест)."""
     async def event_generator():
-        counter = 0
+        # ИНИЦИАЛИЗАЦИЯ: создаём 100 виртуальных объектов с начальным состоянием
+        objects = {
+            i: {
+                "id": i,
+                "value": random.randint(1, 100),  # Начальное значение
+                "trend": random.choice([-1, 1])   # Тренд для изменения (-1 = падает, 1 = растёт)
+            }
+            for i in range(100)  # У нас будет 100 независимых объектов
+        }
+
         try:
             while True:
-                await asyncio.sleep(0.1)  # Пауза 100 мс
-                counter += 1
-                # Формируем простое тестовое событие
-                data = {
-                    "id": counter,
-                    "timestamp": datetime.now().isoformat(),
-                    "value": random.randint(1, 100)
-                }
-                # Формат SSE: "data: <json>\n\n"
-                yield f"data: {json.dumps(data)}\n\n"
+                await asyncio.sleep(0.1)  # Пауза 100 мс (~10 обновлений в секунду)
+
+                # ФОРМИРУЕМ ПАКЕТ ОБНОВЛЕНИЙ: для каждого объекта немного меняем значение
+                updates = []
+                for obj_id, obj in objects.items():
+                    # Изменяем значение с небольшим случайным шагом и трендом
+                    change = random.uniform(-2.5, 2.5) * obj["trend"]
+                    obj["value"] = max(0.1, obj["value"] + change)  # Не даём уйти ниже 0
+
+                    # С 5% вероятностью меняем тренд
+                    if random.random() < 0.05:
+                        obj["trend"] *= -1
+
+                    # Добавляем обновление в пакет
+                    updates.append({
+                        "id": obj_id,
+                        "value": round(obj["value"], 4),
+                        "timestamp": datetime.now().isoformat()
+                    })
+
+                # ОТПРАВЛЯЕМ ВЕСЬ ПАКЕТ КАК ОДНО СОБЫТИЕ SSE
+                # Это эффективнее, чем 100 отдельных событий
+                yield f"data: {json.dumps({'batch': True, 'updates': updates})}\n\n"
+
         except asyncio.CancelledError:
-            print("Клиент отключился")
+            print("Клиент отключился от нагрузочного потока")
 
     return StreamingResponse(
         event_generator(),
         media_type="text/event-stream",
         headers={
             "Cache-Control": "no-cache",
-            "Connection": "keep-alive"
+            "Connection": "keep-alive",
+            "X-Accel-Buffering": "no"
         }
     )
     
